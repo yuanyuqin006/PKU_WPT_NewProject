@@ -1,0 +1,488 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>4-Coil Tx Array — Dynamic Current Allocation</title>
+<style>
+  :root {
+    --bg: #0b0d12;
+    --panel: #141821;
+    --panel2: #1a1f2b;
+    --line: #2a2f3a;
+    --text: #e8ecf2;
+    --muted: #8a93a6;
+    --c1: #ef4444;
+    --c2: #f59e0b;
+    --c3: #22c55e;
+    --c4: #3b82f6;
+    --gold: #fbbf24;
+  }
+    html, body { margin: 0; height: 100vh; background: var(--bg); color: var(--text);
+        font-family: -apple-system, "SF Pro Text", Inter, "PingFang SC", sans-serif; overflow: hidden; }
+      #app { display: flex; height: 100vh; width: 100vw; }
+      #left  { flex: 1; position: relative; min-width: 0; overflow: hidden; }
+      #left canvas { display: block; width: 100% !important; height: 100% !important; }
+  #right { width: 360px; flex: 0 0 360px; background: var(--panel);
+    border-left: 1px solid var(--line); padding: 18px 20px; box-sizing: border-box;
+    overflow-y: auto; }
+
+  h1 { font-size: 16px; margin: 0 0 4px 0; letter-spacing: 0.3px; }
+  .sub { color: var(--muted); font-size: 12px; margin-bottom: 18px; }
+  .sect-title { font-size: 12px; color: var(--muted); text-transform: uppercase;
+    letter-spacing: 1.2px; margin: 18px 0 8px 0; }
+
+  .row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .row .lbl  { width: 38px; font-size: 12px; color: var(--muted); }
+  .row .val  { width: 64px; font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; }
+  .bar { flex: 1; height: 10px; background: var(--panel2); border-radius: 5px; overflow: hidden; position: relative; }
+  .bar > i { display: block; height: 100%; width: 0%; transition: width 80ms linear, background 160ms linear; }
+  .b1 > i { background: var(--c1); }
+  .b2 > i { background: var(--c2); }
+  .b3 > i { background: var(--c3); }
+  .b4 > i { background: var(--c4); }
+
+  .pct-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .pct { background: var(--panel2); border-radius: 8px; padding: 10px 12px; }
+  .pct .tag { font-size: 11px; color: var(--muted); letter-spacing: 1px; }
+  .pct .num { font-size: 22px; font-weight: 600; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .pct.p1 .num { color: var(--c1); }
+  .pct.p2 .num { color: var(--c2); }
+  .pct.p3 .num { color: var(--c3); }
+  .pct.p4 .num { color: var(--c4); }
+
+  .eff { margin-top: 6px; background: linear-gradient(135deg, #1f2738, #18202d);
+    border-radius: 10px; padding: 14px 16px; border: 1px solid #28324a; }
+  .eff .tag { font-size: 11px; color: var(--muted); letter-spacing: 1.4px; }
+  .eff .num { font-size: 32px; font-weight: 700; color: var(--gold); margin-top: 2px;
+    font-variant-numeric: tabular-nums; }
+  .eff .hint { font-size: 11px; color: var(--muted); margin-top: 4px; }
+
+  #status { position: absolute; left: 14px; bottom: 12px; color: var(--muted); font-size: 12px;
+    pointer-events: none; }
+  #coords { position: absolute; right: 14px; bottom: 12px; color: var(--muted); font-size: 12px;
+    font-variant-numeric: tabular-nums; pointer-events: none; }
+</style>
+</head>
+<body>
+
+<div id="app">
+  <div id="left">
+    <div id="status">加载 array_data.json …</div>
+    <div id="coords">Rx (x, y) = (—, —) mm</div>
+  </div>
+
+  <div id="right">
+      <h1>4-Coil Tx Array</h1>
+      <div class="sub">拖拽金色 Rx 圆环实时查看电流动态分配</div>
+      
+      <div style="margin-bottom: 15px;">
+        <select id="algoSelect" style="width: 100%; padding: 6px; background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 4px; font-size: 12px; outline: none; cursor: pointer;">
+          <option value="decoupled">MIMO 主动矩阵解耦 (零迫调谐)</option>
+          <option value="original">传统最大比合并 (未解耦)</option>
+        </select>
+      </div>
+
+      <div class="sect-title">Mutual Inductance (Mᵢ)</div>
+    <div class="row"><div class="lbl">Tx1</div><div class="bar b1"><i id="bar1"></i></div><div class="val" id="m1">— nH</div></div>
+    <div class="row"><div class="lbl">Tx2</div><div class="bar b2"><i id="bar2"></i></div><div class="val" id="m2">— nH</div></div>
+    <div class="row"><div class="lbl">Tx3</div><div class="bar b3"><i id="bar3"></i></div><div class="val" id="m3">— nH</div></div>
+    <div class="row"><div class="lbl">Tx4</div><div class="bar b4"><i id="bar4"></i></div><div class="val" id="m4">— nH</div></div>
+
+    <div class="sect-title">Current Allocation (wᵢ)</div>
+    <div class="pct-grid">
+      <div class="pct p1"><div class="tag">Tx1</div><div class="num" id="w1">—</div></div>
+      <div class="pct p2"><div class="tag">Tx2</div><div class="num" id="w2">—</div></div>
+      <div class="pct p3"><div class="tag">Tx3</div><div class="num" id="w3">—</div></div>
+      <div class="pct p4"><div class="tag">Tx4</div><div class="num" id="w4">—</div></div>
+    </div>
+
+    <div class="sect-title">System Efficiency</div>
+    <div class="eff">
+      <div class="tag">η_total (weighted)</div>
+      <div class="num" id="eff">— %</div>
+      <div class="hint">η = Σ wᵢ·Mᵢ / max(M)</div>
+    </div>
+  </div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ============================================================
+//  几何参数 (单位: mm in scene-space; data 也是 mm)
+// ============================================================
+// 十字阵列: 4 Tx 中心位于半径 R_COIL 的圆周上 (与 solver 一致)
+// scene 映射: data.x → three.x, data.y → three.z
+const R_COIL = 50;                         // 单线圈视觉/物理半径 (mm), 与 solver R_TX 对齐
+const TX_POS = [
+  [0,  R_COIL],   // Tx1 上  (data y = +R)
+  [0, -R_COIL],   // Tx2 下
+  [-R_COIL, 0],   // Tx3 左
+  [ R_COIL, 0],   // Tx4 右
+];
+const TX_COLORS = [0xef4444, 0xf59e0b, 0x22c55e, 0x3b82f6];
+const TUBE = 1.2;                          // 线圈管粗 (mm)
+const AXIAL = 5;                           // Rx 离 Tx 的轴向距离 (mm) — 与 solver 中 H_AXIAL 一致
+
+// 拖拽范围 (匹配数据网格)
+const GRID_MIN = -50, GRID_MAX = 50, GRID_STEP = 0.5;
+const N = Math.round((GRID_MAX - GRID_MIN) / GRID_STEP) + 1;  // 201
+
+// ============================================================
+//  Scene
+// ============================================================
+const left = document.getElementById('left');
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b0d12);
+
+const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 2000);
+camera.position.set(0, 190, 130);   // 斜上方俯视, 十字阵列居中
+camera.lookAt(0, 0, 0);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+left.appendChild(renderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 0, 0);       // 视图中心 = 原点 (4 个线圈共同交点)
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.update();
+
+scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+const dirL = new THREE.DirectionalLight(0xffffff, 0.75);
+dirL.position.set(50, 80, 40); scene.add(dirL);
+const fillL = new THREE.DirectionalLight(0x88aaff, 0.25);
+fillL.position.set(-40, 30, -30); scene.add(fillL);
+
+scene.add(new THREE.GridHelper(240, 24, 0x2a2f3a, 0x1a1d24));
+scene.add(new THREE.AxesHelper(60));
+
+function resize() {
+  const w = left.clientWidth, h = left.clientHeight;
+  renderer.setSize(w, h, false);
+  renderer.setPixelRatio(Math.min(2, window.devicePixelRatio));
+  camera.aspect = w / Math.max(1, h);
+  camera.updateProjectionMatrix();
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ============================================================
+//  Coils — 4 Tx (z=0) + 1 Rx (z=AXIAL)
+//  scene 映射: data.x → three.x, data.y → three.z, 轴向 → three.y
+// ============================================================
+function makeCoil(radius, color, emissive = 0x000000, emInt = 0.1) {
+  const geom = new THREE.TorusGeometry(radius, TUBE, 20, 128);
+  const mat = new THREE.MeshStandardMaterial({
+    color, metalness: 0.55, roughness: 0.35,
+    emissive: new THREE.Color(emissive), emissiveIntensity: emInt,
+  });
+  const m = new THREE.Mesh(geom, mat);
+  m.rotation.x = Math.PI / 2;             // 让圆环平躺在 X-Z 平面
+  return m;
+}
+
+    const txCoils = TX_POS.map((p, i) => {
+      const c = makeCoil(R_COIL, TX_COLORS[i], TX_COLORS[i], 0.05);
+      // Tx3 (i=2) 和 Tx4 (i=3) 工艺下沉 1.2mm，使相对 Rx 的距离拉大到 6.2mm
+      const txY = (i >= 2) ? -1.2 : 0;
+      c.position.set(p[0], txY, p[1]);
+      scene.add(c);
+      return c;
+    });
+
+const rxCoil = makeCoil(R_COIL, 0xfbbf24, 0xfbbf24, 0.45);
+rxCoil.position.set(0, AXIAL, 0);
+scene.add(rxCoil);
+
+// 顶视参考圈 (淡淡的轮廓), 让用户知道阵列范围
+const halo = new THREE.Mesh(
+  new THREE.RingGeometry(R_COIL - 0.3, R_COIL + 0.3, 80),
+  new THREE.MeshBasicMaterial({ color: 0xfbbf24, transparent: true, opacity: 0.18, side: THREE.DoubleSide })
+);
+halo.rotation.x = -Math.PI / 2;
+rxCoil.add(halo);
+
+// ============================================================
+//  Field lines & particles — 每个 Tx 独立一组
+// ============================================================
+const NUM_LINES = 14;
+const PARTICLES_PER_LINE = 4;
+const SAMPLES_PER_CURVE = 48;
+
+function glowTex() {
+  const c = document.createElement('canvas');
+  c.width = 64; c.height = 64;
+  const g = c.getContext('2d');
+  const grd = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  grd.addColorStop(0.0, 'rgba(255,255,255,1.0)');
+  grd.addColorStop(0.3, 'rgba(255,255,255,0.55)');
+  grd.addColorStop(1.0, 'rgba(255,255,255,0.0)');
+  g.fillStyle = grd; g.fillRect(0, 0, 64, 64);
+  return new THREE.CanvasTexture(c);
+}
+const GLOW = glowTex();
+
+// 每个 Tx 一个 group 持有 curves / lines / particles / 速度 / 亮度
+const groups = TX_POS.map((p, i) => {
+  const lineMat = new THREE.LineBasicMaterial({
+    color: TX_COLORS[i], transparent: true, opacity: 0.35,
+  });
+  const partMat = new THREE.SpriteMaterial({
+    map: GLOW, color: TX_COLORS[i],
+    blending: THREE.AdditiveBlending, transparent: true, depthWrite: false,
+  });
+
+  const curves = [], lines = [], particles = [];
+  for (let k = 0; k < NUM_LINES; k++) {
+    const geom = new THREE.BufferGeometry().setFromPoints(
+      new Array(SAMPLES_PER_CURVE + 1).fill(0).map(() => new THREE.Vector3()));
+    const line = new THREE.Line(geom, lineMat);
+    scene.add(line);
+    curves.push(null); lines.push(line);
+  }
+  for (let k = 0; k < NUM_LINES * PARTICLES_PER_LINE; k++) {
+    const sp = new THREE.Sprite(partMat);
+    sp.scale.set(2.4, 2.4, 1);
+    scene.add(sp);
+    particles.push({ sprite: sp, lineIdx: k % NUM_LINES, t: Math.random() });
+  }
+
+  return {
+    txX: p[0], txZ: p[1], color: TX_COLORS[i],
+    txY: (i >= 2) ? -1.2 : 0,
+    coil: txCoils[i], coilMat: txCoils[i].material,
+    lineMat, partMat,
+    curves, lines, particles,
+    speed: 0.05, intensity: 0.05,
+  };
+});
+
+// 重建某 Tx 的贝塞尔曲线 — 当 Rx 移动时调用
+function rebuildCurves(g, rxX, rxZ) {
+  const txPos = new THREE.Vector3(g.txX, g.txY, g.txZ); // 1. 使用实际的 g.txY
+  const rxPos = new THREE.Vector3(rxX, AXIAL, rxZ);
+  
+  const h_eff = AXIAL - g.txY; // 2. 动态计算当前通道的物理高度差 (5.0mm 或 6.2mm)
+  const lateral = Math.hypot(rxX - g.txX, rxZ - g.txZ);
+  const bulge = 6 + 0.30 * lateral;
+  
+  for (let i = 0; i < NUM_LINES; i++) {
+    const theta = (i / NUM_LINES) * Math.PI * 2;
+    const cosT = Math.cos(theta), sinT = Math.sin(theta);
+    
+    const start = new THREE.Vector3(txPos.x + R_COIL * cosT, g.txY,   txPos.z + R_COIL * sinT); // 3. 起点高度设为 g.txY
+    const end   = new THREE.Vector3(rxPos.x + R_COIL * cosT, AXIAL,   rxPos.z + R_COIL * sinT);
+    const out1  = new THREE.Vector3(cosT, 0, sinT);
+    
+    // 4. 控制点抬升高度比例改由 h_eff 决定，防止磁力线轨迹错位
+    const cp1 = start.clone().add(new THREE.Vector3(0,  h_eff * 0.55, 0)).addScaledVector(out1, bulge);
+    const cp2 = end.clone()  .add(new THREE.Vector3(0, -h_eff * 0.55, 0)).addScaledVector(out1, bulge);
+    
+    const curve = new THREE.CubicBezierCurve3(start, cp1, cp2, end);
+    g.curves[i] = curve;
+    const pts = curve.getPoints(SAMPLES_PER_CURVE);
+    g.lines[i].geometry.setFromPoints(pts);
+  }
+}
+
+    // ============================================================
+        //  数据加载 + 索引（完美修复效率 0% 刷新问题版）
+        // ============================================================
+        const status = document.getElementById('status');
+        let DATA = null;
+        let M_MAX = 1e-12; // 设置保底值，防止除以 0
+        let currentMode = 'decoupled'; // 默认使用新算法
+
+        // 监听下拉菜单切换事件
+        document.getElementById('algoSelect').addEventListener('change', (e) => {
+          currentMode = e.target.value;
+          // 修复核心：切换算法时，必须强制重新读取数据、刷新面板，并彻底重建 3D 磁力线几何体
+          sampleAt(rxCoil.position.x, rxCoil.position.z, true);
+        });
+
+        (async function load() {
+          try {
+            const resp = await fetch('array_data.json');
+            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+            const j = await resp.json();
+            DATA = j.data;
+
+            // 扫描全局最大互感绝对值，用于渲染左侧 4 根进度条的比例
+            for (const row of DATA) {
+              const mMax = Math.max(Math.abs(row[2]), Math.abs(row[3]), Math.abs(row[4]), Math.abs(row[5]));
+              if (mMax > M_MAX) M_MAX = mMax;
+            }
+            
+            status.textContent = '数据加载完成 — 拖拽金色 Rx 试试';
+            setTimeout(() => { status.style.opacity = '0.45'; }, 1200);
+            
+            // 初始化时强制刷新数据与曲线
+            sampleAt(rxCoil.position.x, rxCoil.position.z, true);
+          } catch (e) {
+            status.textContent = '加载 array_data.json 失败：' + e.message
+              + ' (请在 ' + location.host + ' 启动 HTTP 服务后再访问)';
+          }
+        })();
+
+        function idxOf(x, y) {
+          let ix = Math.round((x - GRID_MIN) / GRID_STEP);
+          let iy = Math.round((y - GRID_MIN) / GRID_STEP);
+          ix = Math.max(0, Math.min(N - 1, ix));
+          iy = Math.max(0, Math.min(N - 1, iy));
+          return iy * N + ix;
+        }
+
+    const elBars = [1,2,3,4].map(i => document.getElementById('bar' + i));
+            const elMs   = [1,2,3,4].map(i => document.getElementById('m' + i));
+            const elWs   = [1,2,3,4].map(i => document.getElementById('w' + i));
+            const elEff  = document.getElementById('eff');
+            const elCoords = document.getElementById('coords');
+            const elHint   = document.querySelector('.eff .hint'); // 新增：获取动态提示文本元素
+            function applyRow(row, rxX, rxZ) {
+                      if (!row) return;
+
+                      // 1. 提取物理互感数据 (M_raw 带有符号用于文本显示，M_abs 用于条形图长度)
+                      const M_raw = [row[2], row[3], row[4], row[5]];
+                      const M_abs = M_raw.map(m => Math.abs(m));
+
+                      // 2. 算法分流与公式动态适配
+                      let w, eff, hintText;
+                      if (currentMode === 'decoupled') {
+                        w = [row[11], row[12], row[13], row[14]]; // 零迫解耦权重 (第11~14列)
+                        eff = row[15];                            // 主动解耦真实物理效率 (第15列)
+                        hintText = "η = |Σ w_dec·Mᵢ| / (||w_dec||·M_max) <br>[矩阵主动解耦场叠加效率]";
+                      } else {
+                        w = [row[6], row[7], row[8], row[9]];     // 传统合并权重 (第6~9列)
+                        eff = row[10];                            // 传统加权效率 (第10列)
+                        hintText = "η = Σ wᵢ·Mᵢ / M_max <br>[传统最大比合并(MRC)效率]";
+                      }
+
+                      // 3. 动态刷新 UI 仪表盘和 3D 场景粒子的目标状态
+                      for (let i = 0; i < 4; i++) {
+                        // 进度条：使用绝对值，不受负互感影响
+                        elBars[i].style.width = (Math.min(1, M_abs[i] / M_MAX) * 100).toFixed(1) + '%';
+                        elMs[i].textContent = (M_raw[i] * 1e9).toFixed(2) + ' nH';
+                        elWs[i].textContent = (w[i] * 100).toFixed(1) + '%';
+
+                        // 各 Tx 的粒子流速与发光强度实时解耦（避免流速彻底归零导致动画线程僵死）
+                        groups[i].speed     = 0.15 + 1.8 * Math.max(0, w[i]);
+                        groups[i].intensity = 0.05 + 2.0 * Math.max(0, w[i]);
+                        groups[i].lineMat.opacity = 0.15 + 0.75 * Math.max(0, w[i]);
+                        groups[i].partMat.opacity = 0.25 + 0.75 * Math.max(0, w[i]);
+                      }
+                      
+                      // 4. 效率看板全面对齐 C++ 物理修正：释放截断以展现多线圈联合相干带来的阵列增益
+                      const normalizedEff = Math.abs(eff) / M_MAX;
+                      elEff.textContent = (normalizedEff * 100).toFixed(1) + ' %';
+                      
+                      if (elHint) {
+                        elHint.innerHTML = hintText;
+                      }
+                      
+                      elCoords.textContent = 'Rx (x, y) = (' + rxX.toFixed(1) + ', ' + rxZ.toFixed(1) + ') mm';
+                    }
+
+        function sampleAt(rxX, rxZ, rebuild) {
+          if (!DATA) return;
+          const row = DATA[idxOf(rxX, rxZ)];
+          applyRow(row, rxX, rxZ);
+          
+          // 无论是拖拽还是下拉切换，只要 rebuild 为 true，就立即全量重绘 3D 采样曲线拓扑
+          if (rebuild) {
+            for (const g of groups) {
+              rebuildCurves(g, rxX, rxZ);
+            }
+          }
+        }
+
+// ============================================================
+//  拖拽 Rx (X-Z 平面 ↔ data 的 X-Y 平面)
+// ============================================================
+const raycaster = new THREE.Raycaster();
+const pointer = new THREE.Vector2();
+const dragPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -AXIAL); // y = AXIAL
+let dragging = false;
+
+function ndc(ev) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  pointer.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+  pointer.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
+}
+
+renderer.domElement.addEventListener('pointerdown', (ev) => {
+  ndc(ev);
+  raycaster.setFromCamera(pointer, camera);
+  const hit = raycaster.intersectObject(rxCoil, true);
+  if (hit.length) {
+    dragging = true;
+    controls.enabled = false;
+    renderer.domElement.setPointerCapture(ev.pointerId);
+  }
+});
+
+renderer.domElement.addEventListener('pointermove', (ev) => {
+  if (!dragging) return;
+  ndc(ev);
+  raycaster.setFromCamera(pointer, camera);
+  const p = new THREE.Vector3();
+  if (raycaster.ray.intersectPlane(dragPlane, p)) {
+    const x = Math.max(GRID_MIN, Math.min(GRID_MAX, p.x));
+    const z = Math.max(GRID_MIN, Math.min(GRID_MAX, p.z));
+    rxCoil.position.set(x, AXIAL, z);
+    sampleAt(x, z, true);
+  }
+});
+
+function endDrag(ev) {
+  if (!dragging) return;
+  dragging = false;
+  controls.enabled = true;
+  try { renderer.domElement.releasePointerCapture(ev.pointerId); } catch (_) {}
+}
+renderer.domElement.addEventListener('pointerup', endDrag);
+renderer.domElement.addEventListener('pointercancel', endDrag);
+
+// ============================================================
+//  动画 — 每帧推进各 Tx 自己的粒子 + 平滑插值发光强度
+// ============================================================
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+
+  const dt = Math.min(clock.getDelta(), 0.05);
+
+  for (const g of groups) {
+    // emissive 平滑追踪目标 intensity
+    const cur = g.coilMat.emissiveIntensity;
+    g.coilMat.emissiveIntensity = cur + (g.intensity - cur) * Math.min(1, dt * 8);
+
+    // 粒子推进
+    for (const p of g.particles) {
+      p.t += g.speed * dt;
+      if (p.t >= 1) p.t -= 1;
+      const c = g.curves[p.lineIdx];
+      if (c) p.sprite.position.copy(c.getPoint(p.t));
+    }
+  }
+
+  renderer.render(scene, camera);
+}
+
+// 初始曲线 (即便数据未到也先画上)
+for (const g of groups) rebuildCurves(g, rxCoil.position.x, rxCoil.position.z);
+animate();
+</script>
+</body>
+</html>
