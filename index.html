@@ -20,8 +20,10 @@
     html, body { margin: 0; height: 100vh; background: var(--bg); color: var(--text);
         font-family: -apple-system, "SF Pro Text", Inter, "PingFang SC", sans-serif; overflow: hidden; }
       #app { display: flex; height: 100vh; width: 100vw; }
-      #left  { flex: 1; position: relative; min-width: 0; overflow: hidden; }
-      #left canvas { display: block; width: 100% !important; height: 100% !important; }
+      #left  { flex: 1; display: flex; min-width: 0; overflow: hidden; }
+      #leftA, #leftB { flex: 1; position: relative; min-width: 0; overflow: hidden; }
+      #leftA { border-right: 1px solid var(--line); }
+      #leftA canvas, #leftB canvas { display: block; width: 100% !important; height: 100% !important; }
   #right { width: 360px; flex: 0 0 360px; background: var(--panel);
     border-left: 1px solid var(--line); padding: 18px 20px; box-sizing: border-box;
     overflow-y: auto; }
@@ -67,8 +69,11 @@
 
 <div id="app">
   <div id="left">
-    <div id="status">加载 array_data.json …</div>
-    <div id="coords">Rx (x, y) = (—, —) mm</div>
+    <div id="leftA">
+      <div id="status">加载 array_data.json …</div>
+      <div id="coords">Rx (x, y) = (—, —) mm</div>
+    </div>
+    <div id="leftB"></div>
   </div>
 
   <div id="right">
@@ -138,7 +143,7 @@ const N = Math.round((GRID_MAX - GRID_MIN) / GRID_STEP) + 1;
 // ============================================================
 //  Scene
 // ============================================================
-const left = document.getElementById('left');
+const left = document.getElementById('leftA');
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0b0d12);
 
@@ -165,12 +170,191 @@ fillL.position.set(-40, 30, -30); scene.add(fillL);
 scene.add(new THREE.GridHelper(240, 24, 0x2a2f3a, 0x1a1d24));
 scene.add(new THREE.AxesHelper(60));
 
+// ============================================================
+//  3D Surface Plot Scene  (右边: x,y → Relative Efficiency)
+// ============================================================
+const leftB = document.getElementById('leftB');
+const sceneB = new THREE.Scene();
+sceneB.background = new THREE.Color(0x0b0d12);
+
+const SURF_SIZE   = 100;          // 100 mm × 100 mm 的平面
+const SURF_HEIGHT = 60;           // η = 1.0 对应高度 60 (单位与 mm 同视觉尺度)
+const SURF_HALF   = SURF_SIZE / 2;
+const CX_B = -SURF_HALF, CZ_B = -SURF_HALF;   // 坐标系角落 (放置 axes 的位置)
+
+const cameraB = new THREE.PerspectiveCamera(45, 1, 0.1, 2000);
+cameraB.position.set(135, 110, 135);
+cameraB.lookAt(0, SURF_HEIGHT * 0.4, 0);
+
+const rendererB = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+rendererB.outputColorSpace = THREE.SRGBColorSpace;
+leftB.appendChild(rendererB.domElement);
+
+const controlsB = new OrbitControls(cameraB, rendererB.domElement);
+controlsB.target.set(0, SURF_HEIGHT * 0.4, 0);
+controlsB.enableDamping = true;
+controlsB.dampingFactor = 0.08;
+controlsB.update();
+
+sceneB.add(new THREE.AmbientLight(0xffffff, 0.65));
+const dirB1 = new THREE.DirectionalLight(0xffffff, 0.65);
+dirB1.position.set(80, 140, 60); sceneB.add(dirB1);
+const dirB2 = new THREE.DirectionalLight(0xffffff, 0.30);
+dirB2.position.set(-70, 80, -50); sceneB.add(dirB2);
+
+// ---- 文字 sprite 工具 ----
+function makeTextSprite(text, opts = {}) {
+  const fontSize = opts.fontSize || 56;
+  const color    = opts.color    || '#cfd6e4';
+  const bold     = opts.bold ? 'bold ' : '';
+  const c = document.createElement('canvas');
+  c.width = 512; c.height = 128;
+  const g = c.getContext('2d');
+  g.font = `${bold}${fontSize}px -apple-system, "SF Pro Text", Inter, sans-serif`;
+  g.fillStyle = color;
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.fillText(text, 256, 64);
+  const tex = new THREE.CanvasTexture(c);
+  tex.anisotropy = 4;
+  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false });
+  const sp = new THREE.Sprite(mat);
+  const sx = opts.scaleX || 16;
+  sp.scale.set(sx, sx * 0.25, 1);
+  sp.renderOrder = 999;
+  return sp;
+}
+
+// ---- 轴线 ----
+const axisMatB = new THREE.LineBasicMaterial({ color: 0xa9b1c2 });
+function axisLine(p1, p2) {
+  const g = new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(p1[0], p1[1], p1[2]),
+    new THREE.Vector3(p2[0], p2[1], p2[2]),
+  ]);
+  return new THREE.Line(g, axisMatB);
+}
+sceneB.add(axisLine([CX_B, 0, CZ_B], [SURF_HALF, 0, CZ_B]));      // X 轴
+sceneB.add(axisLine([CX_B, 0, CZ_B], [CX_B, SURF_HEIGHT, CZ_B])); // Y 轴 (Relative Efficiency)
+sceneB.add(axisLine([CX_B, 0, CZ_B], [CX_B, 0, SURF_HALF]));      // Z 轴 (data y)
+
+// ---- 底面网格 ----
+sceneB.add(new THREE.GridHelper(SURF_SIZE, 10, 0x2a2f3a, 0x1a1d24));
+
+// ---- 刻度 (短线段 + 数值标签) ----
+const TICK_LEN = 2.2;
+const xyTicks = [-50, -25, 0, 25, 50];
+for (const v of xyTicks) {
+  sceneB.add(axisLine([v, 0, CZ_B], [v, 0, CZ_B - TICK_LEN]));
+  const lbl = makeTextSprite(String(v), { fontSize: 50, scaleX: 9 });
+  lbl.position.set(v, -2.5, CZ_B - 6);
+  sceneB.add(lbl);
+}
+for (const v of xyTicks) {
+  sceneB.add(axisLine([CX_B, 0, v], [CX_B - TICK_LEN, 0, v]));
+  const lbl = makeTextSprite(String(v), { fontSize: 50, scaleX: 9 });
+  lbl.position.set(CX_B - 7, -2.5, v);
+  sceneB.add(lbl);
+}
+const effTicks = [0.0, 0.25, 0.5, 0.75, 1.0];
+for (const v of effTicks) {
+  sceneB.add(axisLine([CX_B, v * SURF_HEIGHT, CZ_B], [CX_B - TICK_LEN, v * SURF_HEIGHT, CZ_B]));
+  const lbl = makeTextSprite(v.toFixed(2), { fontSize: 48, scaleX: 10 });
+  lbl.position.set(CX_B - 9, v * SURF_HEIGHT, CZ_B);
+  sceneB.add(lbl);
+}
+
+// ---- 轴名 (放在每根轴最大刻度的旁边, 不放在中心) ----
+const lblX = makeTextSprite('x (mm)', { color: '#fbbf24', bold: true, fontSize: 56, scaleX: 16 });
+lblX.position.set(SURF_HALF + 9, -2.5, CZ_B - 6);
+sceneB.add(lblX);
+
+const lblZ = makeTextSprite('y (mm)', { color: '#fbbf24', bold: true, fontSize: 56, scaleX: 16 });
+lblZ.position.set(CX_B - 7, -2.5, SURF_HALF + 9);
+sceneB.add(lblZ);
+
+const lblY = makeTextSprite('Relative Efficiency', { color: '#fbbf24', bold: true, fontSize: 52, scaleX: 32 });
+lblY.position.set(CX_B + 2, SURF_HEIGHT + 6, CZ_B);
+sceneB.add(lblY);
+
+// ---- 曲面 (数据载入后构建) ----
+let surfMesh = null;
+function buildSurface() {
+  if (!DATA) return;
+  if (surfMesh) {
+    sceneB.remove(surfMesh);
+    surfMesh.geometry.dispose();
+    surfMesh.material.dispose();
+  }
+  const gridN = N;
+  const geom = new THREE.PlaneGeometry(SURF_SIZE, SURF_SIZE, gridN - 1, gridN - 1);
+  geom.rotateX(-Math.PI / 2);
+
+  const positions = geom.attributes.position;
+  const colors = new Float32Array(positions.count * 3);
+  const c = new THREE.Color();
+
+  for (let i = 0; i < positions.count; i++) {
+    const px = positions.array[i * 3];
+    const pz = positions.array[i * 3 + 2];
+    let dataIx = Math.round((px - GRID_MIN) / GRID_STEP);
+    let dataIy = Math.round((pz - GRID_MIN) / GRID_STEP);
+    dataIx = Math.max(0, Math.min(N - 1, dataIx));
+    dataIy = Math.max(0, Math.min(N - 1, dataIy));
+    const row = DATA[dataIy * N + dataIx];
+    const eff = (currentMode === 'decoupled') ? row[15] : row[10];
+    const rel = Math.min(1, Math.abs(eff) / EFF_MAX);
+
+    positions.array[i * 3 + 1] = rel * SURF_HEIGHT;
+
+    // 红 (rel=0, hue=0°) → 绿 (rel=1, hue=120°)
+    c.setHSL(rel * (120 / 360), 0.85, 0.5);
+    colors[i * 3]     = c.r;
+    colors[i * 3 + 1] = c.g;
+    colors[i * 3 + 2] = c.b;
+  }
+
+  geom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  positions.needsUpdate = true;
+  geom.computeVertexNormals();
+
+  const mat = new THREE.MeshStandardMaterial({
+    vertexColors: true,
+    roughness: 0.55, metalness: 0.08,
+    side: THREE.DoubleSide,
+  });
+  surfMesh = new THREE.Mesh(geom, mat);
+  sceneB.add(surfMesh);
+}
+
+// ---- 倒三角形标记 (尖端朝下指向当前 Rx 位置) ----
+const MARKER_H = 5.5;
+const markerGeom = new THREE.ConeGeometry(2.4, MARKER_H, 4);
+markerGeom.rotateZ(Math.PI);          // 翻转: tip 从 +y 变为 -y
+const markerMat = new THREE.MeshBasicMaterial({ color: 0xfbbf24 });
+const surfMarker = new THREE.Mesh(markerGeom, markerMat);
+surfMarker.position.set(0, MARKER_H / 2 + 2, 0);
+sceneB.add(surfMarker);
+
+function updateSurfMarker(rxX, rxY, relEff) {
+  const surfY = relEff * SURF_HEIGHT;
+  // tip 在 mesh 局部 -y 方向, 偏移 MARKER_H/2 → 让 tip 距曲面 2mm
+  const gap = 2.0;
+  surfMarker.position.set(rxX, surfY + gap + MARKER_H / 2, rxY);
+}
+
 function resize() {
   const w = left.clientWidth, h = left.clientHeight;
   renderer.setSize(w, h, false);
   renderer.setPixelRatio(Math.min(2, window.devicePixelRatio));
   camera.aspect = w / Math.max(1, h);
   camera.updateProjectionMatrix();
+
+  const wB = leftB.clientWidth, hB = leftB.clientHeight;
+  rendererB.setSize(wB, hB, false);
+  rendererB.setPixelRatio(Math.min(2, window.devicePixelRatio));
+  cameraB.aspect = wB / Math.max(1, hB);
+  cameraB.updateProjectionMatrix();
 }
 window.addEventListener('resize', resize);
 resize();
@@ -300,6 +484,7 @@ let currentMode = 'decoupled';
 document.getElementById('algoSelect').addEventListener('change', (e) => {
   currentMode = e.target.value;
   sampleAt(rxCoil.position.x, rxCoil.position.z, true);
+  buildSurface();
 });
 
 (async function load() {
@@ -322,7 +507,8 @@ document.getElementById('algoSelect').addEventListener('change', (e) => {
     
     status.textContent = '数据加载完成 — 拖拽金色 Rx 试试';
     setTimeout(() => { status.style.opacity = '0.45'; }, 1200);
-    
+
+    buildSurface();
     sampleAt(rxCoil.position.x, rxCoil.position.z, true);
   } catch (e) {
     status.textContent = '加载 array_data.json 失败：' + e.message
@@ -380,6 +566,8 @@ function applyRow(row, rxX, rxZ) {
   
   if (elHint) elHint.innerHTML = hintText;
   elCoords.textContent = 'Rx (x, y) = (' + rxX.toFixed(1) + ', ' + rxZ.toFixed(1) + ') mm';
+
+  updateSurfMarker(rxX, rxZ, normalizedEff);
 }
 
 function sampleAt(rxX, rxZ, rebuild) {
@@ -448,6 +636,7 @@ const clock = new THREE.Clock();
 function animate() {
   requestAnimationFrame(animate);
   controls.update();
+  controlsB.update();
 
   const dt = Math.min(clock.getDelta(), 0.05);
 
@@ -464,6 +653,7 @@ function animate() {
   }
 
   renderer.render(scene, camera);
+  rendererB.render(sceneB, cameraB);
 }
 
 for (const g of groups) rebuildCurves(g, rxCoil.position.x, rxCoil.position.z);
